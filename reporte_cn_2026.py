@@ -400,24 +400,15 @@ def procesar_archivo_adicional(file_adicional):
             except Exception as e:
                 print(f"Error extrayendo colores: {e}")
             
-        # 5. Hoja Lista NA (Funciones exentas por curso)
-        sh_na = next((s for s in sheets if 'lista na' in s.lower()), None)
-        if sh_na:
-            df_na = pd.read_excel(xls, sheet_name=sh_na, dtype=str)
-            df_na.columns = [str(c).strip() for c in df_na.columns]
-            # Normalizar todas las celdas de la tabla para búsqueda robusta
-            for col in df_na.columns:
-                df_na[col] = df_na[col].apply(normalizar_texto).replace('NAN', np.nan)
-            info_dict['df_lista_na'] = df_na
-            
-        # 6. Hoja Puestos a Exonerar (Funciones que NO deben aparecer en el consolidado)
-        sh_exon = next((s for s in sheets if 'puestos a exonerar' in s.lower() or 'puestos exonerar' in s.lower()), None)
-        if sh_exon:
-            df_exon = pd.read_excel(xls, sheet_name=sh_exon, header=None, dtype=str)
-            # Tomar la primera columna como lista de puestos (excluyendo encabezado si existe)
-            puestos = df_exon[0].dropna().apply(normalizar_texto).unique().tolist()
-            info_dict['puestos_exonerar'] = puestos
-            st.write(f"🛡️ Se cargaron **{len(puestos)}** puestos para exonerar del consolidado.")
+        # 5. Hoja Filtros (Nuevo: Dinámico para NA y Eliminación)
+        sh_filtros = next((s for s in sheets if 'filtros' in s.lower()), None)
+        if sh_filtros:
+            df_filtros = pd.read_excel(xls, sheet_name=sh_filtros, dtype=str)
+            df_filtros.columns = [str(c).strip() for c in df_filtros.columns]
+            # Normalizar nombres de columnas para evitar problemas de espacios
+            # Esperado: Curso, Campo, Operador, Valores (;), Operador Lógico, Tipo
+            info_dict['df_filtros'] = df_filtros
+            st.write(f"⚙️ Se cargó la hoja de **Filtros** dinámica.")
             
         return info_dict
     except Exception as e:
@@ -513,14 +504,9 @@ def enriquecer_final(df_final, info_adicional):
         df_final = df_final[~mask_codigos].copy()
         df_final.drop(columns=['SubPer_Clean'], inplace=True)
         
-    # 2. Filtro por Puestos a Exonerar
-    if 'puestos_exonerar' in info_adicional and 'Función' in df_final.columns:
-        p_exon = info_adicional['puestos_exonerar']
-        df_final = df_final[~df_final['Función'].apply(normalizar_texto).isin(p_exon)].copy()
-        
     n_post_filt = len(df_final)
     if n_pre_filt != n_post_filt:
-        st.write(f"✂️ Limpieza Final: Se eliminaron **{n_pre_filt - n_post_filt}** registros (Filtros de Códigos/Puestos).")
+        st.write(f"✂️ Limpieza Final: Se eliminaron **{n_pre_filt - n_post_filt}** registros (Filtros de Códigos).")
 
     return df_final[columnas_finales]
 
@@ -692,17 +678,104 @@ def procesar_capacitacion_comun(file, tipo_nombre):
     
     return df[['ID_Clean', 'Título de la capacitación', 'Estado_Calculado']]
 
+def aplicar_filtros_dinamicos(df, df_filtros, modo="No Aplica", curso=None):
+    """
+    Aplica filtros dinámicos basados en la hoja 'Filtros'.
+    Modo: "Eliminar" (Global) o "No Aplica" (Por Curso).
+    """
+    if df_filtros is None or df_filtros.empty:
+        return df if modo == "Eliminar" else pd.Series(False, index=df.index)
+
+    df_f = df_filtros.copy()
+    
+    # Filtrar por tipo y, si corresponde, por curso
+    if modo == "Eliminar":
+        filtros = df_f[df_f['Tipo'].fillna('').str.upper().str.strip() == "ELIMINAR"]
+    else:
+        filtros = df_f[df_f['Tipo'].fillna('').str.upper().str.strip() == "NO APLICA"]
+        if curso:
+            curso_norm = normalizar_texto(curso)
+            filtros = filtros[filtros['Curso'].apply(normalizar_texto) == curso_norm]
+    
+    if filtros.empty:
+        return df if modo == "Eliminar" else pd.Series(False, index=df.index)
+
+    # Mapeo de operadores (Soporte Español/Inglés)
+    op_map = {
+        'EN': 'IN', 'IN': 'IN', 'ESTA EN': 'IN', 'ESTA EN (;)': 'IN',
+        'NO EN': 'NOT IN', 'NOT IN': 'NOT IN', 'NO ESTA EN': 'NOT IN',
+        'IGUAL': 'EQUALS', 'EQUALS': 'EQUALS', '==': 'EQUALS', 'IGUAL A': 'EQUALS',
+        'CONTIENE': 'CONTAINS', 'CONTAINS': 'CONTAINS', 'CONTENIDO': 'CONTAINS', 'INCLUYE': 'CONTAINS'
+    }
+
+    def evaluar_fila_filtro(df_local, f_row):
+        campo_excel = str(f_row['Campo']).strip()
+        campo = next((c for c in df_local.columns if normalizar_texto(c) == normalizar_texto(campo_excel)), None)
+        
+        if not campo:
+            return pd.Series(False, index=df_local.index)
+        
+        op_raw = str(f_row['Operador']).upper().strip()
+        op = op_map.get(op_raw, 'IN')
+        
+        valores_raw = str(f_row['Valores (;)']).split(';')
+        valores = [normalizar_texto(v) for v in valores_raw if str(v).strip() != "" and str(v).upper() != 'NAN']
+        
+        col_vals = df_local[campo].apply(normalizar_texto)
+        
+        if op == 'IN':
+            return col_vals.isin(valores)
+        elif op == 'NOT IN':
+            return ~col_vals.isin(valores)
+        elif op == 'EQUALS':
+            val_to_match = valores[0] if valores else ""
+            return col_vals == val_to_match
+        elif op == 'CONTAINS':
+            val_to_match = valores[0] if valores else ""
+            return col_vals.str.contains(val_to_match, na=False)
+        return pd.Series(False, index=df_local.index)
+
+    mask_final = None
+    ultimo_op_logico = "OR"
+
+    for _, f_row in filtros.iterrows():
+        mask_actual = evaluar_fila_filtro(df, f_row)
+        
+        if mask_final is None:
+            mask_final = mask_actual
+        else:
+            if ultimo_op_logico == "AND":
+                mask_final = mask_final & mask_actual
+            else:
+                mask_final = mask_final | mask_actual
+        
+        ultimo_op_logico = str(f_row.get('Operador Lógico', 'OR')).upper().strip()
+        if ultimo_op_logico not in ["AND", "OR"]:
+            ultimo_op_logico = "OR"
+
+    if modo == "Eliminar":
+        if mask_final is not None:
+            return df[~mask_final].copy()
+        return df
+    else:
+        return mask_final if mask_final is not None else pd.Series(False, index=df.index)
+
 def consolidar_capacitaciones(df_final, df_ucenco, df_campus, info_adicional):
     """
     Integra los datos de capacitación en el DataFrame consolidado usando jerarquía de estados.
-    - Terminado: 3
-    - Desaprobado: 2
-    - Pendiente: 1
-    - No Aplica: 0 (Default)
     """
     if df_final.empty: return df_final
     
     st.write("🔄 Aplicando Jerarquía de Capacitaciones...")
+
+    # 0. Aplicar Filtros Globales de "Eliminar"
+    df_filtros = info_adicional.get('df_filtros', pd.DataFrame())
+    if not df_filtros.empty:
+        n_pre_del = len(df_final)
+        df_final = aplicar_filtros_dinamicos(df_final, df_filtros, modo="Eliminar")
+        n_post_del = len(df_final)
+        if n_pre_del != n_post_del:
+            st.warning(f"🚫 Filtros de Eliminación: Se eliminaron **{n_pre_del - n_post_del}** registros del consolidado.")
     
     # 1. Preparar Matriz de Mapeo
     df_m = info_adicional.get('df_matriz_cursos', pd.DataFrame())
@@ -760,44 +833,24 @@ def consolidar_capacitaciones(df_final, df_ucenco, df_campus, info_adicional):
     df_final['ID_Merge'] = df_final['ID Number'].apply(limpiar_id)
     df_final = pd.merge(df_final, df_pivot, on='ID_Merge', how='left')
     
-    # 5.1 Refinar Lógica de "No Aplica" vs "Pendiente"
-    df_na = info_adicional.get('df_lista_na', pd.DataFrame())
-    
+    # 5.1 Refinar Lógica de "No Aplica" vs "Pendiente" usando Filtros Dinámicos
     # Identificar las columnas de cursos que se agregaron (son las que vienen de df_pivot)
     cursos_encontrados = [c for c in df_pivot.columns if c != 'ID_Merge']
     
-    # Usar todas las columnas que deben estar en el reporte (Matriz + Lo encontrado en archivos)
-    # Esto asegura que la lista de columnas salga "actualizada" y completa.
+    # Usar todas las columnas que deben estar en el reporte
     cursos_a_procesar = list(set(cursos_encontrados + cols_reporte))
-    
-    # Normalizar cabeceras de Lista NA para búsqueda robusta
-    cabeceras_na_norm = {normalizar_texto(c): c for c in df_na.columns}
     
     for curso in cursos_a_procesar:
         if curso not in df_final.columns:
             df_final[curso] = np.nan
             
-        curso_norm = normalizar_texto(curso)
-        col_na_real = cabeceras_na_norm.get(curso_norm)
-        
-        # --- Búsqueda de respaldo si no hay match exacto ---
-        # Por ejemplo, si el curso es "SSO ELECTRO" y la columna es "SSO ELECTRODOMESTICOS"
-        if not col_na_real and not df_na.empty:
-            for c_norm, c_real in cabeceras_na_norm.items():
-                if curso_norm and c_norm and (curso_norm in c_norm or c_norm in curso_norm):
-                    col_na_real = c_real
-                    break
-        
         # 1. Rellenar con "Pendiente" (Status base para todos)
         df_final[curso] = df_final[curso].fillna("Pendiente")
         
-        # 2. VALIDACIÓN DE EXCEPCIÓN (LISTA NA) - PRIORIDAD MÁXIMA
-        # Se hace como último paso para que el "No Aplica" no sea remplazado por nada.
-        if col_na_real:
-            funciones_exentas = df_na[col_na_real].dropna().unique().tolist()
-            mask_exento = df_final['Función'].apply(normalizar_texto).isin(funciones_exentas)
-            # Forzado: No importa si tiene nota (Terminado/Desaprobado), si está en Lista NA queda como "No Aplica".
-            df_final.loc[mask_exento, curso] = "No Aplica"
+        # 2. VALIDACIÓN DE EXCEPCIÓN (FILTROS DINÁMICOS) - PRIORIDAD MÁXIMA
+        if not df_filtros.empty:
+            mask_na = aplicar_filtros_dinamicos(df_final, df_filtros, modo="No Aplica", curso=curso)
+            df_final.loc[mask_na, curso] = "No Aplica"
     st.write("📊 Calculando indicadores de cumplimiento...")
     
     # Identificar las columnas de cursos que se agregaron (son las que vienen de df_pivot)
