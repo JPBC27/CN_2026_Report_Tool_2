@@ -187,11 +187,13 @@ if action == "Reporte de Cursos Normativos":
                             df_c_data = None
                             
                             if list_ucenco:
-                                ucenco_dfs = [procesar_ucenco(f) for f in list_ucenco]
+                                list_u_dyn = info_adicional.get('lista_ucenco')
+                                ucenco_dfs = [procesar_ucenco(f, cursos_validos_custom=list_u_dyn) for f in list_ucenco]
                                 df_u_data = pd.concat(ucenco_dfs, ignore_index=True) if ucenco_dfs else None
                             
                             if list_campus:
-                                campus_dfs = [procesar_capacitacion_comun(f, f.name.replace('Campus_', '').replace('.xlsx', '').replace('.xls', '')) for f in list_campus]
+                                list_c_dyn = info_adicional.get('lista_campus')
+                                campus_dfs = [procesar_capacitacion_comun(f, f.name.replace('Campus_', '').replace('.xlsx', '').replace('.xls', ''), cursos_validos_custom=list_c_dyn) for f in list_campus]
                                 df_c_data = pd.concat(campus_dfs, ignore_index=True) if campus_dfs else None
                                 
                             if df_u_data is not None or df_c_data is not None:
@@ -362,8 +364,8 @@ elif action == "Configuración de Mapeo":
     st.success("La detección automática ha sido reemplazada por mapeo directo de alta precisión.")
 
     st.divider()
-    st.subheader("🎓 Gestión de Cursos (Configuración Interna)")
-    st.write("Modifica los nombres de los cursos que el sistema debe buscar en los archivos de capacitación.")
+    st.subheader("🎓 Gestión de Cursos (Configuración)")
+    st.info("💡 **Nota:** La lista de cursos ahora es **dinámica**. Se extrae automáticamente de la hoja 'Lista de Cursos' del archivo 'Información Adicional'. Los valores a continuación se usarán solo como respaldo si no se encuentra dicha hoja.")
     
     config = cargar_config_cursos()
     

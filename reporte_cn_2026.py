@@ -63,8 +63,8 @@ def cargar_config_cursos():
                 "EVALUACION DE SALIDA - ESTANDAR DE SEGURIDAD Y SALUD EN EL AREA DE RECEPCION DE MERCADERIA 2026",
                 "EVALUACION DE SALIDA ESTANDAR DE SEGURIDAD Y SALUD EN PERECIBLES 2026",
                 "EVALUACION DE SALIDA - ESTANDAR DE SEGURIDAD Y SALUD EN REPRESENTANTES DE VENTAS 2026",
-                "EVALUACIÓN DE SALIDA - ESPECIALISTA EN FRUTAS Y VERDURAS 2026",
-                "EVALUACIÓN DE SALIDA - ESPECIALISTA EN CALIDAD DE LÁCTEOS Y EMBUTIDOS 2026"
+                # "EVALUACIÓN DE SALIDA - ESPECIALISTA EN FRUTAS Y VERDURAS 2026",
+                # "EVALUACIÓN DE SALIDA - ESPECIALISTA EN CALIDAD DE LÁCTEOS Y EMBUTIDOS 2026"
             ]
         }
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -347,7 +347,16 @@ def procesar_archivo_adicional(file_adicional):
                 col_grupo = 'Grupo' if 'Grupo' in df_m.columns else col_grupo
                 if col_grupo not in df_m.columns:
                     df_m[col_grupo] = "SIN GRUPO"
+
+            # --- NUEVO: Extraer listas de cursos dinámicas ---
+            if 'Nombre Capa en UCENCO' in df_m.columns:
+                list_u = df_m['Nombre Capa en UCENCO'].dropna().unique().tolist()
+                info_dict['lista_ucenco'] = [c.strip() for c in list_u if str(c).strip() and str(c).upper() != 'NAN']
             
+            if 'Nombre Capa en Campus Cencosud' in df_m.columns:
+                list_c = df_m['Nombre Capa en Campus Cencosud'].dropna().unique().tolist()
+                info_dict['lista_campus'] = [c.strip() for c in list_c if str(c).strip() and str(c).upper() != 'NAN']
+
             info_dict['df_matriz_cursos'] = df_m
             info_dict['col_grupo_real'] = col_grupo # Para que otras funciones sepan cuál usar
             
@@ -599,7 +608,7 @@ def aplicar_purga_cesados(df_final, df_cesados):
 
 # --- MÓDULO DE CAPACITACIONES (PROCESO INTERNO) ---
 
-def procesar_ucenco(file_ucenco):
+def procesar_ucenco(file_ucenco, cursos_validos_custom=None):
     """
     Procesa archivo Ucenco:
     - Estado 2026: Basado en 'Fecha del examen' y 'Estado del expediente'.
@@ -609,8 +618,11 @@ def procesar_ucenco(file_ucenco):
     if df.empty: return pd.DataFrame()
 
     # Filtro de Cursos Solicitados
-    config = cargar_config_cursos()
-    cursos_validos = [normalizar_texto(c) for c in config.get("ucenco", [])]
+    if cursos_validos_custom is not None:
+        cursos_validos = [normalizar_texto(c) for c in cursos_validos_custom]
+    else:
+        config = cargar_config_cursos()
+        cursos_validos = [normalizar_texto(c) for c in config.get("ucenco", [])]
     
     # Normalizar columnas y Nombres de Cursos
     df.columns = [str(c).strip() for c in df.columns]
@@ -638,7 +650,7 @@ def procesar_ucenco(file_ucenco):
     
     return df[['ID_Clean', 'Título de la capacitación', 'Estado_Calculado']]
 
-def procesar_capacitacion_comun(file, tipo_nombre):
+def procesar_capacitacion_comun(file, tipo_nombre, cursos_validos_custom=None):
     """
     Procesa Transversales y SSO (Misma lógica):
     - Estado 2026: Basado en 'Fecha de finalización de expediente' y 'Estado del expediente'.
@@ -650,8 +662,11 @@ def procesar_capacitacion_comun(file, tipo_nombre):
     df.columns = [str(c).strip() for c in df.columns]
 
     # Filtros de Cursos Transversales / SSO
-    config = cargar_config_cursos()
-    cursos_all = [normalizar_texto(c) for c in config.get("transversales_sso", [])]
+    if cursos_validos_custom is not None:
+        cursos_all = [normalizar_texto(c) for c in cursos_validos_custom]
+    else:
+        config = cargar_config_cursos()
+        cursos_all = [normalizar_texto(c) for c in config.get("transversales_sso", [])]
 
     def logic_trans_sso(row):
         f_fin = str(row.get('Fecha de finalización de expediente', '')).strip()
